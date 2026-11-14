@@ -119,13 +119,14 @@
     var hold = holdDaysFor(p.age_days);
     var extra = p.chains.length > 1 ? ' It also runs on ' + p.chains.slice(1, 3).join(' and ') + '.' : '';
     return [
-      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
+      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline; never farm from a wallet that also holds funds you cannot afford to lose.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
       { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
       { text: 'Make one qualifying action each week, such as ' + weeklyActionFor(p) + ', so the wallet shows repeat use rather than a single deposit.' + extra, cost: 'about $2 of gas a week', time: '10 minutes a week' },
       { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
-      { text: "If the protocol runs a points program, check its own points page once a week and confirm the position is earning.", cost: 'no fee to check', time: '5 minutes a week' },
-      { text: "Before you withdraw, open the protocol's own rewards page and claim only from the link it publishes; never pay a fee to claim.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
-      { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
+      { text: 'If the protocol runs a points program, check its own points page once a week and confirm the position is earning; points are a promise, not a token, and a program can end with no launch at all.', cost: 'no fee to check', time: '5 minutes a week' },
+      { text: "Before you withdraw, open the protocol's own rewards page and claim only from the link it publishes; never pay a fee to claim, and never sign a claim transaction that arrived in a message.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
+      { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' },
+      { text: "Before you deposit anything, confirm the protocol's own contract address on its official site and in its own docs, and never trust an address pasted in a chat or a search result.", cost: 'no fee to check', time: '10 minutes' }
     ].map(stepText);
   }
 
@@ -262,7 +263,7 @@
 
   function sortHeader(key, label) {
     return el('th', { scope: 'col' },
-      el('button', { type: 'button', onclick: function () { if (state.sort === key) state.dir = -state.dir; else { state.sort = key; state.dir = -1; } render(); } },
+      el('button', { type: 'button', 'aria-label': 'Sort by ' + label, onclick: function () { if (state.sort === key) state.dir = -state.dir; else { state.sort = key; state.dir = -1; } render(); } },
         label,
         state.sort === key ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' v' : ' ^' }) : null
       )
@@ -308,7 +309,7 @@
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { class: 'sub', text: state.sandbox ? 'Sandbox values: the board re-ranked with your growth weight and multiple scale. The filed board keeps the model values.' : 'Pre-token protocols, strongest implied value first. Select a row for its model and farm plan.' }),
+          el('caption', { class: 'sub', text: state.sandbox ? 'Sandbox values: the board re-ranked with your growth weight and multiple scale. The filed board keeps the model values.' : 'Pre-token protocols, strongest implied value first. Select a row for its model and farm plan. Rows are keyboard-selectable: focus a row and press Enter.' }),
           el('thead', null, el('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -433,6 +434,10 @@
         var tail = at >= 0 ? s.slice(at + 1) : '';
         return el('li', null, el('b', { text: action }), el('span', { class: 'cost', text: tail }));
       }))
+    ));
+    dialog.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'About this plan' }),
+      el('p', { class: 'sub', text: 'The plan above is generated from this protocol\u2019s own record \u2014 category, chains, TVL and age \u2014 so the same inputs always give the same steps, and the page\u2019s plan matches the one board.json files. Costs are gas only: the capital stays at risk in the position, and a points program is not a promise of a token. Check the protocol\u2019s own pages before you act; nothing here is financial advice.' })
     ));
     if (typeof dialog.showModal === 'function') {
       if (!dialog.open) dialog.showModal();
