@@ -19,6 +19,12 @@
 //
 // No protocol name is ever special-cased: the same function scores every row, and the category
 // multiple is recomputed from the snapshot on every run.
+//
+// How to read a row: rank is the order of implied value, highest first; the category multiple
+// is the one number the market sets, the other three multipliers only adjust it. A row's farm
+// plan is a suggestion for earning a future allocation, not a promise that one exists: points
+// programs end, snapshots move, and a protocol can launch with no allocation at all. Treat
+// the implied value as a way to compare protocols, not as a price any of them will trade at.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -203,9 +209,14 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
+/** Whether a protocol already has a token on record: any one of the three fields counts. */
+export function hasToken(p: SnapshotProtocol): boolean {
+  return p.mcap_usd !== null || p.gecko_id !== null || p.symbol !== null;
+}
+
 /** Whether a protocol records no token at all. */
 export function isPreToken(p: SnapshotProtocol): boolean {
-  return p.mcap_usd === null && p.gecko_id === null && p.symbol === null;
+  return !hasToken(p);
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -243,7 +254,7 @@ export function categoryMultiples(
   model: ModelConstants,
 ): { comps: Map<string, { multiple: number; liveCount: number; median: number }>; global: number } {
   const live = snapshot.protocols.filter(
-    (p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0,
+    (p) => hasToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0,
   );
   const allRatios = live.map((p) => p.mcap_usd! / p.tvl_usd).sort((a, b) => a - b);
   const global = median(allRatios) ?? 0.2;
@@ -424,7 +435,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chainList = p.chains.length > 1 ? ` It also runs on ${p.chains.slice(1, 3).join(' and ')}.` : '';
   return [
     {
-      text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
+      text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline; never farm from a wallet that also holds funds you cannot afford to lose.`,
       cost: 'under $3 of gas for the first transaction',
       time: '5 minutes',
     },
@@ -444,12 +455,12 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: `${hold} days`,
     },
     {
-      text: `If the protocol runs a points program, check its own points page once a week and confirm the position is earning.`,
+      text: `If the protocol runs a points program, check its own points page once a week and confirm the position is earning; points are a promise, not a token, and a program can end with no launch at all.`,
       cost: 'no fee to check',
       time: '5 minutes a week',
     },
     {
-      text: `Before you withdraw, open the protocol's own rewards page and claim only from the link it publishes; never pay a fee to claim.`,
+      text: `Before you withdraw, open the protocol's own rewards page and claim only from the link it publishes; never pay a fee to claim, and never sign a claim transaction that arrived in a message.`,
       cost: 'no fee to check, and never pay to claim',
       time: '10 minutes',
     },
@@ -458,13 +469,18 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       cost: 'nothing but the log',
       time: '5 minutes',
     },
+    {
+      text: `Before you deposit anything, confirm the protocol's own contract address on its official site and in its own docs, and never trust an address pasted in a chat or a search result.`,
+      cost: 'no fee to check',
+      time: '10 minutes',
+    },
   ];
 }
 
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */
 export function liveRows(snapshot: Snapshot): LiveRow[] {
   return snapshot.protocols
-    .filter((p) => !isPreToken(p) && p.category !== 'CEX')
+    .filter((p) => hasToken(p) && p.category !== 'CEX')
     .sort((a, b) => (b.mcap_usd ?? 0) - (a.mcap_usd ?? 0) || b.tvl_usd - a.tvl_usd)
     .slice(0, LIVE_ROWS)
     .map((p) => ({
@@ -566,9 +582,19 @@ export function parseSnapshot(text: string): Snapshot {
     as_of: o.as_of,
     source: o.source,
     floor_usd: o.floor_usd,
-    protocols,
+    protocols: deduped(protocols),
     watchlist: o.watchlist as string[],
   };
+}
+
+/** The protocols, refused when one slug appears twice: a duplicate would double-count one row. */
+function deduped(protocols: SnapshotProtocol[]): SnapshotProtocol[] {
+  const seen = new Set<string>();
+  for (const p of protocols) {
+    if (seen.has(p.slug)) throw new SnapshotError(`snapshot.json lists ${p.slug} twice`);
+    seen.add(p.slug);
+  }
+  return protocols;
 }
 
 /** Why a board is not one the gate will take, or null: coverage, ranks, order, one shared implied value, and farm steps. */
