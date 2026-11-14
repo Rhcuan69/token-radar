@@ -36,6 +36,17 @@ function arg(name: string, fallback: string): string {
   return withEquals === undefined ? fallback : withEquals.slice(name.length + 3);
 }
 
+// --help prints the usage and stops: the scorer needs no snapshot to explain itself.
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  process.stdout.write(
+    'token radar: score the sealed snapshot into a ranked board\n' +
+      '  node main.ts --input <snapshot.json|directory> [--output <dir>]\n' +
+      '  --input defaults to /input, --output to $MAKEFUN_OUTPUT_DIR or /output\n' +
+      '  the run is deterministic: two runs of the same snapshot write identical bytes\n',
+  );
+  process.exit(0);
+}
+
 const inputArg = arg('input', '/input');
 const inputFile = inputArg.endsWith('.json') ? inputArg : join(inputArg, 'snapshot.json');
 if (!existsSync(inputFile)) {
@@ -94,7 +105,15 @@ for (const name of shots) {
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
+// The run's one-line summary: the board's top three rows, so a run's output names the
+// protocols it ranked highest without opening board.json.
+const topLine = board
+  .slice(0, 3)
+  .map((r) => `#${r.rank} ${r.name} $${(r.implied_value_usd / 1e6).toFixed(1)}M`)
+  .join(' · ');
+
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+    `token radar: top 3: ${topLine}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );

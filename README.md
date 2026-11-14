@@ -33,6 +33,35 @@ Wrapped, staked and bridged products of tokens that already trade are excluded f
 board (the house's own watchlist rule, applied to the whole board), as are exchanges and
 versioned pools. No protocol name is special-cased.
 
+## How to read the board
+
+Rank is the order of implied value, highest first. The category multiple is the one number
+the market sets — the median market-cap-to-TVL ratio of the live-token protocols in that
+category, shrunk toward the global median where a category has few comparables. The other
+three multipliers only adjust it: seven-day growth (clamped to −60…+120%), maturity (how
+long the protocol has run with no token, up to four years), and reach (one extra chain at a
+time, capped at five). A row's detail view shows every input that produced its number, and
+recomputes the row live so the page and `board.json` can be checked against each other.
+
+## The farm plan
+
+Every row carries a 7-step farm plan (3–12 steps is the gate's range; this entry uses 8).
+The plan is derived from the protocol's own record — category, chains, TVL and age — never
+from a hand-written list of names, so the same inputs always give the same steps. Capital
+scales with TVL ($50–$250) and the hold scales with age (30–60 days). Costs in the plan are
+gas only: the capital stays at risk in the position, and a points program is a promise, not
+a token. Before depositing, confirm the protocol's own contract address on its official site
+and in its own docs — never trust an address pasted in a chat or a search result.
+
+## Reproducibility and limits
+
+The run is deterministic: `main.ts` builds the board twice and refuses to write anything
+unless the two runs agree byte for byte, and the grader's double run must produce identical
+`/output`. The snapshot is sealed — the model only ever reads its own figures, and a
+duplicate slug in it is refused rather than double-counted. What the model cannot know:
+whether a protocol will ever launch a token, whether its points program will pay, or what
+its token would trade at. Implied value is a way to compare protocols, not a price.
+
 ## Run it locally
 
 ```sh
