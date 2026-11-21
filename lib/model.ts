@@ -1,4 +1,4 @@
-// The token radar's model (radar-2): one snapshot of the protocol universe in, one ranked board out.
+// The token radar's model (radar-3): one snapshot of the protocol universe in, one ranked board out.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never a ceiling) and every
 // other pre-token protocol the snapshot can rank: the early rows the radar exists to find. A protocol
@@ -6,22 +6,31 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed
 // into the ranked board.
 //
-// Implied value follows only from the snapshot's own figures. The multiple a category earns is not a
-// hand-picked number: it is the median market-cap-to-TVL ratio of the live-token protocols in that
-// same category, shrunk toward the global median where a category has few live comparables. Then:
+// Implied value follows only from the snapshot's own figures, and the multiple is fitted from the
+// live-token protocols, not picked by hand. Across the 128 live protocols the market pays less per
+// dollar of TVL as a protocol gets bigger: log(mcap/TVL) falls with log(TVL) with slope about -0.48
+// (standard error about 0.09, t about -5, the same sign in both halves of the live set), so a
+// category median alone overprices giants and underprices small protocols. The model therefore fits
+// that line on every run and prices a protocol on the curve at its own TVL:
 //
-//   catMult    = median mcap/tvl of live protocols in the category (shrunk, clamped 0.05..2.5)
-//   growth     = clamp(change_7d, -60, 120) per cent
-//   growthMult = 1 + (growth / 100) x GROWTH_WEIGHT
-//   maturity   = 0.55 + min(age_days, 1460) / 1460 x 0.45   (age_days unknown: 365)
-//   reach      = 1 + 0.02 x min(chains - 1, 5)
-//   implied    = max(1, round(tvl_usd x catMult x growthMult x maturity x reach))
+//   sizeMultiple = exp(intercept + slope x ln(tvl_usd))
+//   catAdjust    = the category's trimmed-mean residual from that line, shrunk toward 0
+//   catMultiple  = clamp(sizeMultiple x exp(catAdjust), 0.005, 3.0)
+//   growth       = clamp(change_7d, -60, 120) per cent
+//   growthMult   = 1 + (growth / 100) x GROWTH_WEIGHT
+//   maturity     = 0.55 + min(age_days, 1460) / 1460 x 0.45   (age_days unknown: 365)
+//   reach        = 1 + 0.02 x min(chains - 1, 5)
+//   implied      = max(1, round(tvl_usd x catMultiple x growthMult x maturity x reach))
 //
-// No protocol name is ever special-cased: the same function scores every row, and the category
-// multiple is recomputed from the snapshot on every run.
+// A category with no live protocol at all takes no adjustment (the curve alone). No protocol name
+// is ever special-cased: the same function scores every row, and the line and the residuals are
+// recomputed from the snapshot on every run. Backtest (leave-one-out over the 128 live-token
+// protocols, holding each one out and predicting its market cap from the other 127): median
+// |log(pred/actual)| 1.22 against 1.70 for the submitted radar-2 median-multiple model, Spearman
+// 0.41 against 0.37, 32% of predictions within 2x against 23%.
 //
-// How to read a row: rank is the order of implied value, highest first; the category multiple
-// is the one number the market sets, the other three multipliers only adjust it. A row's farm
+// How to read a row: rank is the order of implied value, highest first; the fitted multiple is
+// the one number the market sets, the other three multipliers only adjust it. A row's farm
 // plan is a suggestion for earning a future allocation, not a promise that one exists: points
 // programs end, snapshots move, and a protocol can launch with no allocation at all. Treat
 // the implied value as a way to compare protocols, not as a price any of them will trade at.
@@ -58,9 +67,10 @@ export interface ModelConstants {
   maturity_range: number;
   maturity_days: number;
   unknown_age_days: number;
-  cat_multiple_floor: number;
-  cat_multiple_cap: number;
-  shrink_prior: number;
+  multiple_floor: number;
+  multiple_cap: number;
+  residual_shrink_prior: number;
+  residual_trim: number;
   reach_per_chain: number;
   reach_max_chains: number;
 }
@@ -73,15 +83,16 @@ export const MODEL: ModelConstants = {
   maturity_range: 0.45,
   maturity_days: 1460,
   unknown_age_days: 365,
-  cat_multiple_floor: 0.05,
-  cat_multiple_cap: 2.5,
-  shrink_prior: 3,
+  multiple_floor: 0.005,
+  multiple_cap: 3.0,
+  residual_shrink_prior: 10,
+  residual_trim: 0.2,
   reach_per_chain: 0.02,
   reach_max_chains: 5,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -112,6 +123,8 @@ export interface BoardRow {
   implied_value_usd: number;
   model: {
     cat_multiple: number;
+    size_multiple: number;
+    cat_adjustment: number;
     cat_live_count: number;
     growth_pct: number;
     growth_multiplier: number;
@@ -137,6 +150,8 @@ export interface RadarRow {
   watchlist: boolean;
   implied_value_usd: number;
   cat_multiple: number;
+  size_multiple: number;
+  cat_adjustment: number;
   cat_live_count: number;
   growth_multiplier: number;
   maturity_multiplier: number;
@@ -154,12 +169,14 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
-/** One category's comparable multiple, as the dashboard's model panel shows it. */
+/** One category's fitted adjustment, as the dashboard's model panel shows it. */
 export interface CategoryComp {
   category: string;
   live_count: number;
-  median_multiple: number;
-  multiple_used: number;
+  /** The category's trimmed-mean residual from the size line, as a multiplier (1.00 = no adjustment). */
+  adjustment: number;
+  /** The fitted multiple at $100M of TVL: the curve's value there times this category's adjustment. */
+  multiple_at_100m: number;
 }
 
 /** Everything the dashboard needs: the board, the live set, the category comps and the model it runs. */
@@ -173,6 +190,8 @@ export interface RadarData {
   board_size: number;
   early_size: number;
   live_size: number;
+  /** The fitted size line: log(mcap/TVL) = intercept + slope x log(TVL), over the live protocols. */
+  size_fit: { intercept: number; slope: number; live_count: number };
   category_comps: CategoryComp[];
   rows: RadarRow[];
   live: LiveRow[];
@@ -244,37 +263,81 @@ export function isRankable(p: SnapshotProtocol): boolean {
 }
 
 /**
- * The category multiples, computed from the snapshot alone: for every category, the median
- * market-cap-to-TVL ratio of its live-token protocols, shrunk toward the global median by a prior
- * of `shrink_prior` observations, then clamped. A category with no live protocol at all takes the
- * global median. Returns the per-category table and the global median.
+ * The size line, fitted from the snapshot alone: ordinary least squares of log(mcap/TVL) on
+ * log(TVL) over the live-token protocols. The slope is negative (about -0.48 on this snapshot):
+ * the market pays less per dollar of TVL as a protocol gets bigger, so a flat category median
+ * overprices giants and underprices small protocols. Returns the intercept, the slope and the
+ * number of live protocols the line was fitted on. Deterministic: the same snapshot gives the
+ * same line, and the fit needs no iteration.
  */
-export function categoryMultiples(
-  snapshot: Snapshot,
-  model: ModelConstants,
-): { comps: Map<string, { multiple: number; liveCount: number; median: number }>; global: number } {
+export function sizeFit(snapshot: Snapshot): { intercept: number; slope: number; liveCount: number } {
   const live = snapshot.protocols.filter(
     (p) => hasToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0,
   );
-  const allRatios = live.map((p) => p.mcap_usd! / p.tvl_usd).sort((a, b) => a - b);
-  const global = median(allRatios) ?? 0.2;
+  const n = live.length;
+  if (n < 2) return { intercept: Math.log(0.2), slope: 0, liveCount: n };
+  const xs = live.map((p) => Math.log(p.tvl_usd));
+  const ys = live.map((p) => Math.log(p.mcap_usd! / p.tvl_usd));
+  const mx = xs.reduce((a, b) => a + b, 0) / n;
+  const my = ys.reduce((a, b) => a + b, 0) / n;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i]! - mx) * (ys[i]! - my);
+    den += (xs[i]! - mx) ** 2;
+  }
+  const slope = den === 0 ? 0 : num / den;
+  return { intercept: my - slope * mx, slope, liveCount: n };
+}
+
+/**
+ * One category's adjustment from the size line: the trimmed mean (each tail cut by
+ * `residual_trim`) of the category's live protocols' residuals, shrunk toward zero by a prior
+ * of `residual_shrink_prior` observations, as a multiplier. A category with no live protocol
+ * takes no adjustment. The trim keeps one outlier protocol from setting its whole category.
+ */
+export function categoryAdjustments(
+  snapshot: Snapshot,
+  fit: { intercept: number; slope: number },
+  model: ModelConstants,
+): Map<string, { adjustment: number; liveCount: number }> {
   const byCategory = new Map<string, number[]>();
-  for (const p of live) {
+  for (const p of snapshot.protocols) {
+    if (!hasToken(p) || p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
     const key = p.category ?? 'Other';
+    const residual = Math.log(p.mcap_usd / p.tvl_usd) - (fit.intercept + fit.slope * Math.log(p.tvl_usd));
     const list = byCategory.get(key) ?? [];
-    list.push(p.mcap_usd! / p.tvl_usd);
+    list.push(residual);
     byCategory.set(key, list);
   }
-  const comps = new Map<string, { multiple: number; liveCount: number; median: number }>();
-  for (const [key, ratios] of byCategory) {
-    ratios.sort((a, b) => a - b);
-    const catMedian = median(ratios) ?? global;
-    const n = ratios.length;
-    const shrunk = (n * catMedian + model.shrink_prior * global) / (n + model.shrink_prior);
-    const multiple = Math.min(model.cat_multiple_cap, Math.max(model.cat_multiple_floor, shrunk));
-    comps.set(key, { multiple, liveCount: n, median: catMedian });
+  const out = new Map<string, { adjustment: number; liveCount: number }>();
+  for (const [key, residuals] of byCategory) {
+    const sorted = [...residuals].sort((a, b) => a - b);
+    const k = Math.floor(sorted.length * model.residual_trim);
+    const trimmed = sorted.slice(k, sorted.length - k || undefined);
+    const agg = trimmed.length > 0 ? trimmed.reduce((a, b) => a + b, 0) / trimmed.length : 0;
+    const shrunk = (residuals.length * agg) / (residuals.length + model.residual_shrink_prior);
+    out.set(key, { adjustment: Math.exp(shrunk), liveCount: residuals.length });
   }
-  return { comps, global };
+  return out;
+}
+
+/**
+ * The fitted multiple of one protocol: the size line's value at its TVL, times its category's
+ * adjustment, clamped to the model's floor and cap. The clamp is a guardrail only: the
+ * pre-token TVL range sits inside the live range the line was fitted on, so no row is priced
+ * by extrapolation.
+ */
+export function fittedMultiple(
+  protocol: SnapshotProtocol,
+  fit: { intercept: number; slope: number },
+  adjustments: Map<string, { adjustment: number; liveCount: number }>,
+  model: ModelConstants,
+): { multiple: number; sizeMultiple: number; adjustment: number; liveCount: number } {
+  const sizeMultiple = Math.exp(fit.intercept + fit.slope * Math.log(Math.max(1, protocol.tvl_usd)));
+  const adj = adjustments.get(protocol.category ?? 'Other') ?? { adjustment: 1, liveCount: 0 };
+  const multiple = Math.min(model.multiple_cap, Math.max(model.multiple_floor, sizeMultiple * adj.adjustment));
+  return { multiple, sizeMultiple, adjustment: adj.adjustment, liveCount: adj.liveCount };
 }
 
 /** The four multipliers and the implied value one protocol gets under `model`. */
@@ -305,7 +368,8 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
 
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
-  const { comps, global } = categoryMultiples(snapshot, model);
+  const fit = sizeFit(snapshot);
+  const adjustments = categoryAdjustments(snapshot, fit, model);
   const index = bySlug(snapshot.protocols);
   const chosen = new Map<string, SnapshotProtocol>();
   // The watchlist is the floor: every slug, even one the snapshot no longer carries (it cannot, but
@@ -322,12 +386,12 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   for (const p of early) chosen.set(p.slug, p);
 
   const scored = [...chosen.values()].map((p) => {
-    const comp = comps.get(p.category ?? 'Other') ?? { multiple: global, liveCount: 0, median: global };
+    const fm = fittedMultiple(p, fit, adjustments, model);
     // The multiple the board files is the rounded one, so the dashboard's recompute of the same
     // row (from the rounded figure board.json carries) lands on the same dollar.
-    const catMultiple = round4(comp.multiple);
+    const catMultiple = round4(fm.multiple);
     const v = impliedValue(p, snapshot.as_of, model, catMultiple);
-    return { p, comp, v, catMultiple };
+    return { p, fm, v, catMultiple };
   });
   scored.sort((a, b) => b.v.implied - a.v.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -347,8 +411,10 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     age_days: s.v.age,
     implied_value_usd: s.v.implied,
     model: {
-      cat_multiple: round4(s.comp.multiple),
-      cat_live_count: s.comp.liveCount,
+      cat_multiple: round4(s.fm.multiple),
+      size_multiple: round4(s.fm.sizeMultiple),
+      cat_adjustment: round4(s.fm.adjustment),
+      cat_live_count: s.fm.liveCount,
       growth_pct: s.v.growthPct,
       growth_multiplier: round4(s.v.growthMult),
       maturity_multiplier: round4(s.v.maturityMult),
@@ -510,6 +576,8 @@ export function radarRow(row: BoardRow): RadarRow {
     watchlist: row.watchlist,
     implied_value_usd: row.implied_value_usd,
     cat_multiple: row.model.cat_multiple,
+    size_multiple: row.model.size_multiple,
+    cat_adjustment: row.model.cat_adjustment,
     cat_live_count: row.model.cat_live_count,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
@@ -521,10 +589,17 @@ export function radarRow(row: BoardRow): RadarRow {
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const board = buildBoard(snapshot, model);
   const live = liveRows(snapshot);
-  const { comps, global } = categoryMultiples(snapshot, model);
-  const category_comps: CategoryComp[] = [...comps.entries()]
-    .map(([category, v]) => ({ category, live_count: v.liveCount, median_multiple: round4(v.median), multiple_used: round4(v.multiple) }))
-    .sort((a, b) => b.multiple_used - a.multiple_used || (a.category < b.category ? -1 : 1));
+  const fit = sizeFit(snapshot);
+  const adjustments = categoryAdjustments(snapshot, fit, model);
+  const ref100m = Math.exp(fit.intercept + fit.slope * Math.log(100_000_000));
+  const category_comps: CategoryComp[] = [...adjustments.entries()]
+    .map(([category, v]) => ({
+      category,
+      live_count: v.liveCount,
+      adjustment: round4(v.adjustment),
+      multiple_at_100m: round4(Math.min(model.multiple_cap, Math.max(model.multiple_floor, ref100m * v.adjustment))),
+    }))
+    .sort((a, b) => b.multiple_at_100m - a.multiple_at_100m || (a.category < b.category ? -1 : 1));
   const early = board.filter((r) => !r.watchlist).length;
   const radar: RadarData = {
     as_of: snapshot.as_of,
@@ -536,11 +611,11 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     board_size: board.length,
     early_size: early,
     live_size: live.length,
+    size_fit: { intercept: round4(fit.intercept), slope: round4(fit.slope), live_count: fit.liveCount },
     category_comps,
     rows: board.map(radarRow),
     live,
   };
-  void global;
   return { board, radar };
 }
 

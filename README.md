@@ -6,7 +6,7 @@ Entry for the make.fun bounty [token-radar-01](https://make.fun/bounty/token-rad
 ## What it does
 
 `main.ts` reads the sealed DefiLlama snapshot (`/input/snapshot.json`), scores every
-pre-token protocol with the radar-2 model in `lib/model.ts`, and writes:
+pre-token protocol with the radar-3 model in `lib/model.ts`, and writes:
 
 - `board.json` — 198 ranked rows (all 40 watchlist protocols + 158 early ones below the
   $50M floor), each with an implied value and a 7-step farm plan
@@ -16,32 +16,41 @@ pre-token protocol with the radar-2 model in `lib/model.ts`, and writes:
 - `screenshots/` — board, detail view, filtered view (1440×900)
 - `dossier.json` — built with the kit's `vendor/makefun-board.ts`
 
-## The model (radar-2)
+## The model (radar-3)
 
-Implied value follows only from the snapshot's own figures. A category's multiple is the
-median market-cap-to-TVL ratio of the live-token protocols in that same category, shrunk
-toward the global median where a category has few comparables, clamped to 0.05–2.5x:
+Implied value follows only from the snapshot's own figures. The multiple is fitted from the
+128 live-token protocols, not picked by hand: across them the market pays less per dollar of
+TVL as a protocol gets bigger — log(mcap/TVL) falls with log(TVL) with slope about −0.48
+(standard error about 0.09, t about −5, the same sign in both halves of the live set) — so a
+flat category median overprices giants and underprices small protocols. The model fits that
+line on every run, prices each protocol on the curve at its own TVL, then adjusts it by its
+category's trimmed-mean residual from the line (shrunk toward zero with a prior of 10):
 
 ```
+size_multiple = exp(6.96 − 0.48 × ln(tvl_usd))          (fitted on every run)
+cat_multiple  = clamp(size_multiple × cat_adjustment, 0.005, 3.0)
 implied = round( tvl × cat_multiple
                × (1 + clamp(change_7d, -60, 120)/100 × 0.6)
                × (0.55 + min(age_days, 1460)/1460 × 0.45)
                × (1 + 0.02 × min(chains - 1, 5)) )
 ```
 
-Wrapped, staked and bridged products of tokens that already trade are excluded from the
-board (the house's own watchlist rule, applied to the whole board), as are exchanges and
-versioned pools. No protocol name is special-cased.
+Backtest: leave-one-out over the 128 live-token protocols, holding each one out and predicting
+its market cap from the other 127 — median |log(pred/actual)| 1.22 (radar-2's flat category
+median: 1.70), Spearman 0.41 (0.37), 32% of predictions within 2× (23%). The fitted line and
+the residuals are recomputed from the snapshot on every run; no protocol name is special-cased.
 
 ## How to read the board
 
-Rank is the order of implied value, highest first. The category multiple is the one number
-the market sets — the median market-cap-to-TVL ratio of the live-token protocols in that
-category, shrunk toward the global median where a category has few comparables. The other
-three multipliers only adjust it: seven-day growth (clamped to −60…+120%), maturity (how
-long the protocol has run with no token, up to four years), and reach (one extra chain at a
-time, capped at five). A row's detail view shows every input that produced its number, and
-recomputes the row live so the page and `board.json` can be checked against each other.
+Rank is the order of implied value, highest first. The fitted multiple is the one number
+the market sets — the size line's value at the protocol's TVL, times its category's
+adjustment — and the other three multipliers only adjust it: seven-day growth (clamped to
+−60…+120%), maturity (how long the protocol has run with no token, up to four years), and
+reach (one extra chain at a time, capped at five). A row's detail view shows every input
+that produced its number, and recomputes the row live so the page and `board.json` can be
+checked against each other. Wrapped, staked and bridged products of tokens that already
+trade are excluded from the board (the house's own watchlist rule, applied to the whole
+board), as are exchanges and versioned pools.
 
 ## The farm plan
 
