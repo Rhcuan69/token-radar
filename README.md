@@ -72,7 +72,7 @@ unless the two runs agree byte for byte, and the grader's double run must produc
 `/output`. The snapshot is sealed — the model only ever reads its own figures, and a
 duplicate slug in it is refused rather than double-counted. What the model cannot know:
 whether a protocol will ever launch a token, whether its points program will pay, or what
-its token would trade at. 
+its token would trade at. Implied value is a way to compare protocols, not a price.
 
 ## Run it locally
 
